@@ -130,7 +130,7 @@ static void advanced_key_dynamic_keystroke(const advanced_key_event_t *event) {
 
   // Disable Rapid Trigger when the key is bound with Dynamic Keystroke
   matrix_disable_rapid_trigger(event->key, event_type != AK_EVENT_TYPE_RELEASE);
-  for (uint32_t i = 0; i < 4; i++) {
+  for (uint32_t i = 0; i < NUM_DYNAMIC_KEYSTROKE_MAX_BINDINGS; i++) {
     const uint8_t keycode = dks->keycodes[i];
     // We arrange the event types so that we can use the event type as an index
     // to the bitmap.

@@ -89,6 +89,14 @@ _Static_assert(1 <= NUM_KEYS && NUM_KEYS <= 256,
 _Static_assert(1 <= NUM_ADVANCED_KEYS && NUM_ADVANCED_KEYS <= 64,
                "NUM_ADVANCED_KEYS must be between 1 and 64");
 
+#if !defined(NUM_DYNAMIC_KEYSTROKE_MAX_BINDINGS)
+#error "NUM_DYNAMIC_KEYSTROKE_MAX_BINDINGS is not defined"
+#endif
+
+_Static_assert(4 <= NUM_DYNAMIC_KEYSTROKE_MAX_BINDINGS &&
+                   NUM_DYNAMIC_KEYSTROKE_MAX_BINDINGS <= 64,
+               "NUM_DYNAMIC_KEYSTROKE_MAX_BINDINGS must be between 4 and 64");
+
 //--------------------------------------------------------------------+
 // Keyboard Types
 //--------------------------------------------------------------------+
@@ -151,14 +159,14 @@ typedef enum {
 
 // Dynamic Keystroke configuration
 typedef struct __attribute__((packed)) {
-  // Bind up to 4 keycodes
-  uint8_t keycodes[4];
+  // Bind up to `NUM_DYNAMIC_KEYSTROKE_MAX_BINDINGS` keycodes
+  uint8_t keycodes[NUM_DYNAMIC_KEYSTROKE_MAX_BINDINGS];
   // For each keycode, bind up to 4 actions for each part of the keystroke
   // Bit 0-1: Action for key press
   // Bit 2-3: Action for key bottom-out
   // Bit 4-5: Action for key release from bottom-out
   // Bit 6-7: Action for key release
-  uint8_t bitmap[4];
+  uint8_t bitmap[NUM_DYNAMIC_KEYSTROKE_MAX_BINDINGS];
   // Bottom-out point (0-255)
   uint8_t bottom_out_point;
 } dynamic_keystroke_t;
