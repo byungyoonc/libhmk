@@ -92,9 +92,10 @@ command_stage_advanced_key_write(const command_in_advanced_keys_t *p) {
       p->len > M_ARRAY_SIZE(p->data) || p->len == 0)
     goto fail;
 
-  if (p->offset == 0) {
-    command_reset_advanced_key_write_state();
+  if (p->offset % advanced_key_size == 0) {
+    // It is always safe to start staging at the beginning of an advanced key.
     advanced_key_write_state.profile = p->profile;
+    advanced_key_write_state.offset = p->offset;
   }
 
   if (p->offset != advanced_key_write_state.offset ||
