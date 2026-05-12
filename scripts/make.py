@@ -140,6 +140,7 @@ build_flags.define("NUM_ADVANCED_KEYS", kb.num_advanced_keys)
 build_flags.define(
     "NUM_DYNAMIC_KEYSTROKE_MAX_BINDINGS", kb.num_dynamic_keystroke_max_bindings
 )
+build_flags.define("NUM_MACRO_NODES", kb.num_macro_nodes)
 
 # Default Keymaps (per profile)
 default_keymaps = utils.resolve_default_keymaps(kb_json)
