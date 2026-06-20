@@ -62,6 +62,7 @@ static bool v1_5_profile_config_func(uint8_t profile, uint8_t *dst,
 #define MIGRATION_V1_5_ADVANCED_KEY_SIZE                                       \
   (3 + 2 * NUM_DYNAMIC_KEYSTROKE_MAX_BINDINGS + 1)
 #define MIGRATION_V1_5_MACRO_NODE_SIZE 4
+#define MIGRATION_V1_5_MACRO_NODE_NONE UINT8_MAX
 #define MIGRATION_V1_5_PROFILE_CONFIG_SIZE                                     \
   (NUM_LAYERS * NUM_KEYS + NUM_KEYS * 4 +                                      \
    NUM_ADVANCED_KEYS * MIGRATION_V1_5_ADVANCED_KEY_SIZE +                      \
@@ -119,6 +120,11 @@ _Static_assert(MIGRATION_V1_5_GLOBAL_CONFIG_SIZE +
                        NUM_PROFILES * MIGRATION_V1_5_PROFILE_CONFIG_SIZE ==
                    offsetof(eeconfig_t, magic_end),
                "Invalid configuration size");
+
+// An assertion to remind us if there is a breaking change to `MACRO_NODE_NONE`.
+// Update the assertion when a new version is added.
+_Static_assert(MIGRATION_V1_5_MACRO_NODE_NONE == MACRO_NODE_NONE,
+               "Invalid MACRO_NODE_NONE");
 
 bool migration_try_migrate(void) {
   if (eeconfig->magic_start != EECONFIG_MAGIC_START)
@@ -374,8 +380,11 @@ bool v1_5_profile_config_func(uint8_t profile, uint8_t *dst,
                          MIGRATION_V1_0_ADVANCED_KEY_SIZE);
   }
 
-  // Clear the new per-profile Macro buffer.
-  migration_memset(&dst, 0, NUM_MACRO_NODES * MIGRATION_V1_5_MACRO_NODE_SIZE);
+  // Clear the new per-profile macro buffer.
+  for (uint32_t i = 0; i < NUM_MACRO_NODES; i++) {
+    migration_memset(&dst, 0, 3);
+    migration_assign_uint8_t(&dst, MIGRATION_V1_5_MACRO_NODE_NONE);
+  }
 
   // Copy the remaining profile fields.
   migration_memcpy(&dst, &src, NUM_KEYS + 9 + 1);
