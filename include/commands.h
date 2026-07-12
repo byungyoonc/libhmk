@@ -211,6 +211,39 @@ _Static_assert(sizeof(command_out_buffer_t) <= RAW_HID_EP_SIZE,
                "Invalid command output buffer size");
 
 //---------------------------------------------------------------------+
+// Staged Protocol
+//---------------------------------------------------------------------+
+
+typedef enum {
+  COMMAND_STAGED_NONE = 0,
+  COMMAND_STAGED_ADVANCED_KEYS,
+  COMMAND_STAGED_MACROS,
+} command_staged_id_t;
+
+typedef union {
+  advanced_key_t advanced_key;
+  macro_node_t macro_node;
+} command_staged_buffer_data_t;
+
+typedef struct {
+  uint8_t staged_id;
+  uint8_t profile;
+  uint32_t offset;
+  union {
+    command_staged_buffer_data_t data;
+    uint8_t raw_data[sizeof(command_staged_buffer_data_t)];
+  };
+} command_staged_buffer_t;
+
+typedef struct {
+  uint8_t staged_id;
+  command_in_staged_profile_t *p;
+  uint32_t field_size;
+  uint32_t item_size;
+  bool (*write_func)(void);
+} command_staged_write_t;
+
+//---------------------------------------------------------------------+
 // Command API
 //---------------------------------------------------------------------+
 

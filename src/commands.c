@@ -37,56 +37,27 @@ static volatile bool command_response_pending;
 static uint8_t in_buf[RAW_HID_EP_SIZE];
 static uint8_t out_buf[RAW_HID_EP_SIZE];
 
-#define COMMAND_STAGED_WRITE_BUFFER_SIZE                                       \
-  M_MAX(sizeof(advanced_key_t), sizeof(macro_node_t) * NUM_MACRO_NODES)
+command_staged_buffer_t staged_buffer;
 
-typedef enum {
-  COMMAND_STAGED_WRITE_NONE = 0,
-  COMMAND_STAGED_WRITE_ADVANCED_KEY,
-  COMMAND_STAGED_WRITE_MACROS,
-} command_staged_write_type_t;
-
-static struct {
-  uint8_t type;
-  uint8_t profile;
-  uint32_t offset;
-  uint8_t data[COMMAND_STAGED_WRITE_BUFFER_SIZE];
-} staged_write_state;
-
-static void command_reset_staged_write_state(void) {
-  staged_write_state.type = COMMAND_STAGED_WRITE_NONE;
-  staged_write_state.profile = 0;
-  staged_write_state.offset = 0;
+static void command_reset_staged_buffer(void) {
+  staged_buffer.staged_id = COMMAND_STAGED_NONE;
+  staged_buffer.profile = 0;
+  staged_buffer.offset = 0;
 }
 
 /**
- * @brief Write a fully staged configuration item
+ * @brief Write the advanced key staged in `staged_buffer`
  *
- * @param profile Profile index
- * @param offset Byte offset within the staged field
- * @param data Staged data
- * @param len Length of the staged data
+ * Caller must make sure that the staged advanced key is in a valid state.
  *
  * @return `true` if the write was successful
  */
-typedef bool (*command_staged_write_commit_t)(uint8_t profile, uint32_t offset,
-                                              const uint8_t *data,
-                                              uint32_t len);
-
-/**
- * @brief Write the advanced key staged in `staged_write_state`
- *
- * Caller must make sure that the staged advanced key is complete.
- *
- * @return `true` if the write was successful
- */
-static bool command_commit_staged_advanced_key(uint8_t profile, uint32_t offset,
-                                               const uint8_t *data,
-                                               uint32_t len) {
-  if (len != sizeof(advanced_key_t) || offset % sizeof(advanced_key_t) != 0)
+static bool command_write_staged_advanced_key(void) {
+  if (staged_buffer.staged_id != COMMAND_STAGED_ADVANCED_KEYS)
     return false;
 
-  const uint8_t key_index = offset / sizeof(advanced_key_t);
+  const uint8_t profile = staged_buffer.profile;
+  const uint8_t key_index = staged_buffer.offset / sizeof(advanced_key_t);
 
   if (profile >= NUM_PROFILES || key_index >= NUM_ADVANCED_KEYS)
     return false;
@@ -95,7 +66,8 @@ static bool command_commit_staged_advanced_key(uint8_t profile, uint32_t offset,
     advanced_key_clear();
 
   const bool success = EECONFIG_WRITE_N(
-      profiles[profile].advanced_keys[key_index], data, sizeof(advanced_key_t));
+      profiles[profile].advanced_keys[key_index],
+      &staged_buffer.data.advanced_key, sizeof(advanced_key_t));
 
   if (profile == eeconfig->current_profile)
     layout_load_advanced_keys();
@@ -104,108 +76,94 @@ static bool command_commit_staged_advanced_key(uint8_t profile, uint32_t offset,
 }
 
 /**
- * @brief Write the macro buffer staged in `staged_write_state`
+ * @brief Write the macro node staged in `staged_buffer`
  *
- * Caller must make sure that the staged macro buffer is complete.
+ * Caller must make sure that the staged macro node is in a valid state.
  *
  * @return `true` if the write was successful
  */
-static bool command_commit_staged_macros(uint8_t profile, uint32_t offset,
-                                         const uint8_t *data, uint32_t len) {
-  if (profile >= NUM_PROFILES)
+static bool command_write_staged_macro(void) {
+  if (staged_buffer.staged_id != COMMAND_STAGED_MACROS)
     return false;
 
-  const uint32_t macros_size = sizeof(eeconfig->profiles[profile].macros);
+  const uint8_t profile = staged_buffer.profile;
+  const uint8_t node_id = staged_buffer.offset / sizeof(macro_node_t);
 
-  if (len != macros_size || offset != 0)
+  if (profile >= NUM_PROFILES || node_id >= NUM_MACRO_NODES)
     return false;
 
   if (profile == eeconfig->current_profile)
     advanced_key_clear();
 
-  const uint32_t macros_offset = offsetof(eeconfig_t, profiles) +
-                                 profile * sizeof(eeconfig_profile_t) +
-                                 offsetof(eeconfig_profile_t, macros);
-  return wear_leveling_write(macros_offset, data, len);
+  const bool success =
+      EECONFIG_WRITE_N(profiles[profile].macros[node_id],
+                       &staged_buffer.data.macro_node, sizeof(macro_node_t));
+
+  if (profile == eeconfig->current_profile)
+    layout_load_advanced_keys();
+
+  return success;
 }
 
 /**
- * @brief Stage a payload to be written only when a complete item is available
+ * @brief Stage the staged protocol payload to be written at a later time to
+ * prevent partial writes to the persistent configuration
  *
  * @return `true` if the stage was successful
  */
-static bool command_stage_write(uint8_t type, uint8_t profile, uint32_t offset,
-                                const uint8_t *data, uint32_t len,
-                                uint32_t field_size, uint32_t item_size,
-                                uint32_t data_capacity,
-                                command_staged_write_commit_t commit) {
-  if (offset + len > field_size || len > data_capacity || len == 0 ||
-      item_size > COMMAND_STAGED_WRITE_BUFFER_SIZE)
+__attribute__((always_inline)) static inline bool
+command_stage_write(const command_staged_write_t args) {
+  const uint8_t staged_id = args.staged_id;
+  const command_in_staged_profile_t *p = args.p;
+  const uint32_t field_size = args.field_size;
+  const uint32_t item_size = args.item_size;
+  bool (*write_func)(void) = args.write_func;
+
+  if (p->offset + p->len > field_size || p->len > M_ARRAY_SIZE(p->data) ||
+      p->len == 0)
     goto fail;
 
-  if (offset % item_size == 0) {
+  if (p->offset % item_size == 0) {
     // It is always safe to start staging at the beginning of an item.
-    staged_write_state.type = type;
-    staged_write_state.profile = profile;
-    staged_write_state.offset = offset;
+    staged_buffer.staged_id = staged_id;
+    staged_buffer.profile = p->profile;
+    staged_buffer.offset = p->offset;
   }
 
-  if (type != staged_write_state.type || offset != staged_write_state.offset ||
-      profile != staged_write_state.profile)
-    // Unexpected write type, offset, or profile mismatch.
+  if (staged_id != staged_buffer.staged_id ||
+      p->offset != staged_buffer.offset || p->profile != staged_buffer.profile)
+    // Unexpected staged id, write offset, or profile mismatch.
     goto fail;
 
-  for (uint32_t i = 0; i < len;) {
-    const uint32_t current_item_offset = staged_write_state.offset % item_size;
-    const uint32_t write_len = M_MIN(len - i, item_size - current_item_offset);
+  for (uint32_t i = 0; i < p->len;) {
+    const uint32_t current_item_offset = staged_buffer.offset % item_size;
+    const uint32_t write_len =
+        M_MIN(p->len - i, item_size - current_item_offset);
 
-    memcpy(staged_write_state.data + current_item_offset, data + i, write_len);
+    memcpy(staged_buffer.raw_data + current_item_offset, p->data + i,
+           write_len);
 
-    if (len - i >= item_size - current_item_offset) {
-      const uint32_t item_offset =
-          staged_write_state.offset - current_item_offset;
-      const bool success =
-          commit(profile, item_offset, staged_write_state.data, item_size);
+    if (p->len - i >= item_size - current_item_offset) {
+      const bool success = write_func();
       if (!success)
         goto fail;
     }
 
-    staged_write_state.offset += write_len;
+    staged_buffer.offset += write_len;
     i += write_len;
   }
-
-  if (staged_write_state.offset % item_size == 0)
-    command_reset_staged_write_state();
 
   return true;
 
 fail:
-  command_reset_staged_write_state();
+  command_reset_staged_buffer();
   return false;
-}
-
-static bool
-command_stage_advanced_key_write(const command_in_staged_profile_t *p) {
-  return command_stage_write(
-      COMMAND_STAGED_WRITE_ADVANCED_KEY, p->profile, p->offset, p->data, p->len,
-      sizeof(eeconfig->profiles[p->profile].advanced_keys),
-      sizeof(advanced_key_t), M_ARRAY_SIZE(p->data),
-      command_commit_staged_advanced_key);
-}
-
-static bool command_stage_macro_write(const command_in_staged_profile_t *p) {
-  const uint32_t macros_size = sizeof(eeconfig->profiles[p->profile].macros);
-
-  return command_stage_write(COMMAND_STAGED_WRITE_MACROS, p->profile, p->offset,
-                             p->data, p->len, macros_size, macros_size,
-                             M_ARRAY_SIZE(p->data),
-                             command_commit_staged_macros);
 }
 
 void command_init(void) {
   command_request_pending = false;
   command_response_pending = false;
-  command_reset_staged_write_state();
+  command_reset_staged_buffer();
 }
 
 bool command_enqueue(const uint8_t *buf, uint16_t len) {
@@ -229,12 +187,6 @@ bool command_enqueue(const uint8_t *buf, uint16_t len) {
 static void command_process(void) {
   const command_in_buffer_t *in = (const command_in_buffer_t *)in_buf;
   command_out_buffer_t *out = (command_out_buffer_t *)out_buf;
-
-  if (in->command_id != COMMAND_SET_ADVANCED_KEYS &&
-      in->command_id != COMMAND_SET_MACROS)
-    // Partial staged writes are only valid across consecutive staged write
-    // packets.
-    command_reset_staged_write_state();
 
   bool success = true;
   switch (in->command_id) {
@@ -422,7 +374,13 @@ static void command_process(void) {
 
     COMMAND_VERIFY(p->profile < NUM_PROFILES);
 
-    success = command_stage_advanced_key_write(p);
+    success = command_stage_write((command_staged_write_t){
+        .staged_id = COMMAND_STAGED_ADVANCED_KEYS,
+        .p = (command_in_staged_profile_t *)p,
+        .field_size = sizeof(eeconfig->profiles[p->profile].advanced_keys),
+        .item_size = sizeof(advanced_key_t),
+        .write_func = command_write_staged_advanced_key,
+    });
     break;
   }
   case COMMAND_GET_MACROS: {
@@ -444,7 +402,13 @@ static void command_process(void) {
 
     COMMAND_VERIFY(p->profile < NUM_PROFILES);
 
-    success = command_stage_macro_write(p);
+    success = command_stage_write((command_staged_write_t){
+        .staged_id = COMMAND_STAGED_MACROS,
+        .p = (command_in_staged_profile_t *)p,
+        .field_size = sizeof(eeconfig->profiles[p->profile].macros),
+        .item_size = sizeof(macro_node_t),
+        .write_func = command_write_staged_macro,
+    });
     break;
   }
   case COMMAND_GET_TICK_RATE: {
