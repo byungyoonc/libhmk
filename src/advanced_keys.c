@@ -22,9 +22,6 @@
 #include "layout.h"
 #include "matrix.h"
 
-#define MACRO_DELAY_UNIT_MS 10
-#define NUM_KEYCODES 256
-
 static advanced_key_state_t ak_states[NUM_ADVANCED_KEYS];
 
 static void advanced_key_null_bind_reset_state(ak_state_null_bind_t *state) {
@@ -477,6 +474,9 @@ void advanced_key_tick(bool has_non_tap_hold_press) {
             timer_elapsed(state->macro.since) >= current_node->delay;
         switch (current_node->action) {
         case MACRO_ACTION_TAP:
+          // Run the next macro step in a different matrix scan than the one
+          // that unregistered the key in the case of consecutive taps of the
+          // same keycode.
           if (state->macro.deferred_tap_ticks > 0) {
             state->macro.deferred_tap_ticks--;
             if (state->macro.deferred_tap_ticks == 0) {
@@ -484,12 +484,12 @@ void advanced_key_tick(bool has_non_tap_hold_press) {
               advanced_key_macro_remove_active_keycode(&state->macro,
                                                        current_node->keycode);
             }
-          }
-          if (state->macro.deferred_tap_ticks == 0 && delay_elapsed)
+          } else if (state->macro.deferred_tap_ticks == 0 && delay_elapsed) {
             // Unlike other actions, we wait for both the delay and the
             // deferred tap ticks to elapse before running the next step.
             advanced_key_macro_run_step(&state->macro, ak->key,
                                         current_node->next);
+          }
           break;
 
         case MACRO_ACTION_PRESS:
